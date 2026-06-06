@@ -10,10 +10,11 @@ export type LevelConfig = {
   seatCount: number;
   lanes: number;
   wallColumns: number[][];
+  wallColors: number[][];
   reserveUnits: UnitSpec[];
 };
 
-const palette = [0x8d5cf6, 0x46566e, 0xf4b53f, 0xff5656, 0xb8e84a];
+const laneColors = [0xff5555, 0xf5c842, 0x66cc66, 0x5599ff, 0xaa66dd];
 
 export const levelOne: LevelConfig = {
   seatCount: 5,
@@ -25,8 +26,15 @@ export const levelOne: LevelConfig = {
     [10, 11, 12, 13, 14, 14, 15, 16],
     [8, 9, 10, 12, 12, 13, 14]
   ],
+  wallColors: [
+    Array(7).fill(laneColors[0]),
+    Array(8).fill(laneColors[1]),
+    Array(8).fill(laneColors[2]),
+    Array(8).fill(laneColors[3]),
+    Array(7).fill(laneColors[4])
+  ],
   reserveUnits: Array.from({ length: 12 }, (_, index) => {
-    const tint = palette[index % palette.length];
+    const tint = laneColors[index % laneColors.length];
     return {
       label: 200,
       damage: 2 + (index % 3),

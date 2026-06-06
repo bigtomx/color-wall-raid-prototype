@@ -1,6 +1,7 @@
 export type SeatState = {
   lane: number;
   occupied: boolean;
+  color: number;
 };
 
 export type WallCellState = {
@@ -8,11 +9,14 @@ export type WallCellState = {
   layer: number;
   hp: number;
   destroyed: boolean;
+  color: number;
 };
 
 export type LevelState = {
   seats: SeatState[];
   wallColumns: number[][];
+  wallColors: number[][];
+  seatColors: number[];
 };
 
 export function getLaneRemainingDurability(cells: WallCellState[]): number {
@@ -26,18 +30,25 @@ export function getLaneRemainingDurability(cells: WallCellState[]): number {
 }
 
 export function findFrontTarget(
-  cells: WallCellState[]
+  cells: WallCellState[],
+  color?: number
 ): WallCellState | undefined {
   return [...cells]
-    .filter((cell) => !cell.destroyed && cell.hp > 0)
+    .filter(
+      (cell) =>
+        !cell.destroyed &&
+        cell.hp > 0 &&
+        (color === undefined || cell.color === color)
+    )
     .sort((left, right) => left.layer - right.layer)[0];
 }
 
 export function applyDamageToLane(
   cells: WallCellState[],
-  damage: number
+  damage: number,
+  color?: number
 ): WallCellState | undefined {
-  const target = findFrontTarget(cells);
+  const target = findFrontTarget(cells, color);
 
   if (!target) {
     return undefined;
@@ -51,18 +62,30 @@ export function applyDamageToLane(
   return target;
 }
 
-export function findBestSeat(levelState: LevelState): number | null {
+export function findBestSeat(
+  levelState: LevelState,
+  unitColor?: number
+): number | null {
   const rankedSeats = levelState.seats
     .map((seat, index) => ({
       index,
       lane: seat.lane,
       occupied: seat.occupied,
+      seatColor: levelState.seatColors[seat.lane],
       remainingDurability: levelState.wallColumns[seat.lane].reduce(
         (sum, hp) => sum + hp,
         0
       )
     }))
-    .filter((seat) => !seat.occupied)
+    .filter((seat) => {
+      if (seat.occupied) {
+        return false;
+      }
+      if (unitColor !== undefined && seat.seatColor !== unitColor) {
+        return false;
+      }
+      return true;
+    })
     .sort((left, right) => {
       if (right.remainingDurability !== left.remainingDurability) {
         return right.remainingDurability - left.remainingDurability;
