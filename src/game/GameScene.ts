@@ -2,10 +2,14 @@ import Phaser from "phaser";
 import { levelOne, type LevelConfig, type UnitSpec } from "./level";
 import {
   findBestSeat,
-  findFrontTarget,
+  findColorTarget,
+  hasColorTarget,
+  canReservesDeployAndAttack,
   type SeatState,
   type WallCellState
 } from "./gameLogic";
+
+// --- View types ----------------------------------------------------------
 
 type ReserveUnitView = {
   spec: UnitSpec;
@@ -17,7 +21,8 @@ type ReserveUnitView = {
 type UnitActor = {
   spec: UnitSpec;
   lane: number;
-  state: "deploying" | "attacking";
+  state: "deploying" | "attacking" | "expiring";
+  ammoLeft: number;
   container: Phaser.GameObjects.Container;
   glow: Phaser.GameObjects.Arc;
   body: Phaser.GameObjects.Arc;
@@ -35,21 +40,44 @@ type SeatView = {
   actor?: UnitActor;
 };
 
+/** Each wall sphere — lives in a board-grid, rendered as a 3D-ish ball. */
 type WallCellView = {
   state: WallCellState;
-  gfx: Phaser.GameObjects.Graphics;
-  hpText: Phaser.GameObjects.Text;
+  screenX: number;
+  screenY: number;
+  radius: number;
 };
+
+type Point = {
+  x: number;
+  y: number;
+};
+
+// --- Constants -----------------------------------------------------------
 
 const GAME_WIDTH = 540;
 const GAME_HEIGHT = 960;
-const WALL_TOP_Y = 160;
-const WALL_CELL_H = 50;
-const WALL_BOX_W = 52;
-const WALL_BOX_D = 22;
-const SEAT_Y = 730;
-const LANE_SPACING = 96;
 const CENTER_X = GAME_WIDTH / 2;
+
+// Board projection
+const WALL_BACK_LEFT: Point = { x: 126, y: 124 };
+const WALL_BACK_RIGHT: Point = { x: 416, y: 108 };
+const WALL_FRONT_LEFT: Point = { x: 38, y: 456 };
+const WALL_FRONT_RIGHT: Point = { x: 502, y: 434 };
+const WALL_GRID_ROWS = 8;
+const WALL_BEAD_BACK = 10;
+const WALL_BEAD_FRONT = 18;
+const WALL_LANE_SPANS = [3, 3, 4, 3, 4];
+
+// Seat / reserve projection
+const SEAT_FRONT_LEFT: Point = { x: 88, y: 564 };
+const SEAT_FRONT_RIGHT: Point = { x: 450, y: 546 };
+const RESERVE_QUEUE_BASE_LEFT: Point = { x: 72, y: 712 };
+const RESERVE_QUEUE_BASE_RIGHT: Point = { x: 468, y: 700 };
+const RESERVE_QUEUE_DROP_Y = 70;
+const RESERVE_QUEUE_DRIFT_X = 13;
+
+// --- Helpers -------------------------------------------------------------
 
 function tintBrightness(color: number, factor: number): number {
   const r = Math.min(255, Math.round(((color >> 16) & 0xff) * factor));
@@ -58,10 +86,68 @@ function tintBrightness(color: number, factor: number): number {
   return (r << 16) | (g << 8) | b;
 }
 
+function lerp(start: number, end: number, t: number): number {
+  return start + (end - start) * t;
+}
+
+function lerpPoint(start: Point, end: Point, t: number): Point {
+  return {
+    x: lerp(start.x, end.x, t),
+    y: lerp(start.y, end.y, t)
+  };
+}
+
+function projectWall(
+  lane: number,
+  layer: number,
+  totalLanes: number
+): { x: number; y: number; radius: number; depthScale: number } {
+  const rowT = (WALL_GRID_ROWS - 1) > 0 ? layer / (WALL_GRID_ROWS - 1) : 0;
+  const laneT = totalLanes > 1 ? lane / (totalLanes - 1) : 0;
+  const leftEdge = lerpPoint(WALL_BACK_LEFT, WALL_FRONT_LEFT, rowT);
+  const rightEdge = lerpPoint(WALL_BACK_RIGHT, WALL_FRONT_RIGHT, rowT);
+  const base = lerpPoint(leftEdge, rightEdge, laneT);
+  const radius = lerp(WALL_BEAD_BACK, WALL_BEAD_FRONT, rowT);
+
+  return {
+    x: base.x,
+    y: base.y,
+    radius,
+    depthScale: lerp(0.72, 1, rowT)
+  };
+}
+
+function getLaneSpan(lane: number): number {
+  return WALL_LANE_SPANS[lane] ?? WALL_LANE_SPANS[WALL_LANE_SPANS.length - 1] ?? 3;
+}
+
+function projectSeat(lane: number, totalSeats: number): Point {
+  const laneT = totalSeats > 1 ? lane / (totalSeats - 1) : 0;
+  const front = lerpPoint(SEAT_FRONT_LEFT, SEAT_FRONT_RIGHT, laneT);
+  return {
+    x: front.x,
+    y: front.y + Math.sin(laneT * Math.PI) * 10
+  };
+}
+
+function uniqueColors<T>(items: T[], pickColor: (item: T) => number): number[] {
+  const colors: number[] = [];
+  items.forEach((item) => {
+    const color = pickColor(item);
+    if (!colors.includes(color)) {
+      colors.push(color);
+    }
+  });
+  return colors;
+}
+
+// --- Scene ---------------------------------------------------------------
+
 export class GameScene extends Phaser.Scene {
   private level: LevelConfig = levelOne;
   private seats: SeatView[] = [];
-  private wallByLane: WallCellView[][] = [];
+  private wallCells: WallCellView[] = [];
+  private wallGfx!: Phaser.GameObjects.Graphics;
   private reserveUnits: ReserveUnitView[] = [];
   private laneStates: SeatState[] = [];
   private bullets!: Phaser.GameObjects.Group;
@@ -81,6 +167,8 @@ export class GameScene extends Phaser.Scene {
     this.createFrame();
     this.startLevel();
   }
+
+  // ---- level lifecycle ---------------------------------------------------
 
   private startLevel(): void {
     this.resultState = "running";
@@ -102,11 +190,8 @@ export class GameScene extends Phaser.Scene {
     });
     this.seats = [];
 
-    this.wallByLane.flat().forEach((cell) => {
-      cell.gfx.destroy();
-      cell.hpText.destroy();
-    });
-    this.wallByLane = [];
+    this.wallGfx?.destroy();
+    this.wallCells = [];
 
     this.reserveUnits.forEach((unit) => unit.container.destroy());
     this.reserveUnits = [];
@@ -114,191 +199,280 @@ export class GameScene extends Phaser.Scene {
     this.bullets.clear(true, true);
   }
 
+  // ---- backdrop ----------------------------------------------------------
+
   private createBackdrop(): void {
     const bg = this.add.graphics();
-    bg.fillGradientStyle(0x6b3030, 0x552828, 0x402020, 0x381818, 1);
+    bg.fillGradientStyle(0x4c2724, 0x3b1e1d, 0x291518, 0x1a1014, 1);
     bg.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
 
-    const ground = this.add.graphics();
-    ground.fillStyle(0x8b4040, 1);
-    ground.beginPath();
-    ground.moveTo(30, 120);
-    ground.lineTo(GAME_WIDTH - 30, 120);
-    ground.lineTo(GAME_WIDTH - 10, 770);
-    ground.lineTo(10, 770);
-    ground.closePath();
-    ground.fillPath();
+    const glow = this.add.graphics();
+    glow.fillGradientStyle(0x8a4e48, 0x704039, 0x3f2426, 0x261519, 0.3);
+    glow.fillEllipse(CENTER_X, 238, 470, 360);
 
-    const surface = this.add.graphics();
-    surface.fillStyle(0x7a3838, 1);
-    surface.beginPath();
-    surface.moveTo(30, 120);
-    surface.lineTo(GAME_WIDTH - 30, 120);
-    surface.lineTo(GAME_WIDTH - 50, 145);
-    surface.lineTo(50, 145);
-    surface.closePath();
-    surface.fillPath();
+    const wallGround = this.add.graphics();
+    wallGround.fillStyle(0x342021, 1);
+    wallGround.beginPath();
+    wallGround.moveTo(WALL_BACK_LEFT.x, WALL_BACK_LEFT.y);
+    wallGround.lineTo(WALL_BACK_RIGHT.x, WALL_BACK_RIGHT.y);
+    wallGround.lineTo(WALL_FRONT_RIGHT.x, WALL_FRONT_RIGHT.y);
+    wallGround.lineTo(WALL_FRONT_LEFT.x, WALL_FRONT_LEFT.y);
+    wallGround.closePath();
+    wallGround.fillPath();
+
+    const surfaceEdge = this.add.graphics();
+    surfaceEdge.fillStyle(0x53302c, 0.92);
+    surfaceEdge.beginPath();
+    surfaceEdge.moveTo(WALL_BACK_LEFT.x, WALL_BACK_LEFT.y);
+    surfaceEdge.lineTo(WALL_BACK_RIGHT.x, WALL_BACK_RIGHT.y);
+    surfaceEdge.lineTo(WALL_BACK_RIGHT.x + 10, WALL_BACK_RIGHT.y + 18);
+    surfaceEdge.lineTo(WALL_BACK_LEFT.x + 10, WALL_BACK_LEFT.y + 18);
+    surfaceEdge.closePath();
+    surfaceEdge.fillPath();
+
+    const rim = this.add.graphics();
+    rim.lineStyle(4, 0x8f4b48, 0.9);
+    rim.beginPath();
+    rim.moveTo(WALL_FRONT_LEFT.x, WALL_FRONT_LEFT.y);
+    rim.lineTo(WALL_FRONT_RIGHT.x, WALL_FRONT_RIGHT.y);
+    rim.lineTo(WALL_BACK_RIGHT.x, WALL_BACK_RIGHT.y);
+    rim.lineTo(WALL_BACK_LEFT.x, WALL_BACK_LEFT.y);
+    rim.closePath();
+    rim.strokePath();
+
+    const battlefield = this.add.graphics();
+    battlefield.fillGradientStyle(0x241315, 0x201214, 0x170d11, 0x12090d, 1);
+    battlefield.beginPath();
+    battlefield.moveTo(WALL_FRONT_LEFT.x, WALL_FRONT_LEFT.y);
+    battlefield.lineTo(WALL_FRONT_RIGHT.x, WALL_FRONT_RIGHT.y);
+    battlefield.lineTo(GAME_WIDTH - 26, 646);
+    battlefield.lineTo(28, 646);
+    battlefield.closePath();
+    battlefield.fillPath();
 
     const lower = this.add.graphics();
-    lower.fillGradientStyle(0x2a1818, 0x241515, 0x1e1212, 0x181010, 1);
-    lower.fillRoundedRect(16, 780, GAME_WIDTH - 32, 170, 24);
+    lower.fillGradientStyle(0x1f0f11, 0x1b0d10, 0x15090d, 0x10070b, 1);
+    lower.fillRoundedRect(16, 660, GAME_WIDTH - 32, 290, 24);
   }
+
+  // ---- HUD frame ---------------------------------------------------------
 
   private createFrame(): void {
     this.add
-      .text(CENTER_X, 36, "Color Wall Raid", {
+      .text(CENTER_X, 28, "Color Wall Raid", {
         fontFamily: "Trebuchet MS, Arial, sans-serif",
-        fontSize: "30px",
+        fontSize: "28px",
         fontStyle: "700",
         color: "#ffffff"
       })
       .setOrigin(0.5);
 
     this.add
-      .text(CENTER_X, 70, "同色小兵摧毁同色城墙", {
+      .text(CENTER_X, 56, "同色小兵摧毁同色城墙", {
         fontFamily: "Trebuchet MS, Arial, sans-serif",
-        fontSize: "16px",
-        color: "#e0c8b0"
+        fontSize: "14px",
+        color: "#d8c0a8"
       })
       .setOrigin(0.5);
 
     this.statusText = this.add
-      .text(CENTER_X, 790, "", {
+      .text(CENTER_X, 668, "", {
         fontFamily: "Trebuchet MS, Arial, sans-serif",
-        fontSize: "16px",
+        fontSize: "15px",
         color: "#fdf4c8"
       })
       .setOrigin(0.5);
   }
 
+  // ---- wall (sphere grid) ------------------------------------------------
+
   private createWall(): void {
-    this.wallByLane = this.level.wallColumns.map((column, lane) =>
-      column.map((hp, layer) =>
-        this.createWallCell(lane, layer, hp, this.level.wallColors[lane][layer])
-      )
-    );
+    this.wallCells = [];
+    this.wallGfx = this.add.graphics();
+
+    // Back-to-front so nearer spheres occlude farther ones
+    for (let layer = 0; layer < WALL_GRID_ROWS; layer += 1) {
+      for (let lane = 0; lane < this.level.lanes; lane += 1) {
+        const columnHP = this.level.wallColumns[lane];
+        const columnColors = this.level.wallColors[lane];
+        if (layer >= columnHP.length) {
+          continue;
+        }
+
+        const proj = projectWall(lane, layer, this.level.lanes);
+        const cell: WallCellView = {
+          state: {
+            lane,
+            layer,
+            hp: columnHP[layer],
+            destroyed: false,
+            color: columnColors[layer]
+          },
+          screenX: proj.x,
+          screenY: proj.y,
+          radius: proj.radius
+        };
+        this.wallCells.push(cell);
+        this.drawSphere(this.wallGfx, cell);
+      }
+    }
   }
 
-  private createWallCell(
-    lane: number,
-    layer: number,
-    hp: number,
-    color: number
-  ): WallCellView {
-    const laneX = this.getLaneX(lane);
-    const y = WALL_TOP_Y + layer * WALL_CELL_H;
-    const w = WALL_BOX_W;
-    const d = WALL_BOX_D;
-    const h = WALL_CELL_H - 6;
+  /** Full redraw of every surviving sphere — called after each cell destroy. */
+  private redrawWall(): void {
+    this.wallGfx.clear();
 
-    const gfx = this.add.graphics();
-    this.drawIsoBox(gfx, laneX, y, w, h, d, color);
-
-    const hpText = this.add
-      .text(laneX, y + h * 0.45, String(hp), {
-        fontFamily: "Trebuchet MS, Arial, sans-serif",
-        fontSize: "16px",
-        fontStyle: "700",
-        color: "#ffffff",
-        stroke: "#000000",
-        strokeThickness: 2
-      })
-      .setOrigin(0.5);
-
-    return {
-      state: { lane, layer, hp, destroyed: false, color },
-      gfx,
-      hpText
-    };
+    // Back-to-front
+    for (let layer = 0; layer < WALL_GRID_ROWS; layer += 1) {
+      for (let lane = 0; lane < this.level.lanes; lane += 1) {
+        const cell = this.wallCells.find(
+          (c) => c.state.lane === lane && c.state.layer === layer
+        );
+        if (cell && !cell.state.destroyed) {
+          this.drawSphere(this.wallGfx, cell);
+        }
+      }
+    }
   }
 
-  private drawIsoBox(
+  /**
+   * Draw one wall sphere with radial gradient (canvas 2D) or
+   * layered circles (fallback) for a 3D ball look.
+   */
+  private drawSphere(
     gfx: Phaser.GameObjects.Graphics,
-    cx: number,
-    topY: number,
-    w: number,
-    h: number,
-    d: number,
-    color: number
+    cell: WallCellView
   ): void {
-    const left = cx - w / 2;
-    const right = cx + w / 2;
+    const { screenX: cx, screenY: cy, radius: r } = cell;
+    const color = cell.state.color;
+    const span = getLaneSpan(cell.state.lane);
+    const spacingX = r * 1.06;
+    const backCount = Math.max(1, span - 1);
+    const cluster: Array<{ dx: number; dy: number; scale: number }> = [];
 
-    const topColor = tintBrightness(color, 1.2);
-    const frontColor = tintBrightness(color, 0.88);
-    const rightColor = tintBrightness(color, 0.55);
+    for (let index = 0; index < backCount; index += 1) {
+      const centered = backCount === 1 ? 0 : index - (backCount - 1) / 2;
+      cluster.push({
+        dx: centered * spacingX + r * 0.44,
+        dy: -r * 0.48,
+        scale: 0.76
+      });
+    }
 
-    // Top face (brightest — light from above)
-    gfx.fillStyle(topColor, 1);
-    gfx.beginPath();
-    gfx.moveTo(left, topY);
-    gfx.lineTo(right, topY);
-    gfx.lineTo(right + d, topY + d);
-    gfx.lineTo(left + d, topY + d);
-    gfx.closePath();
-    gfx.fillPath();
+    for (let index = 0; index < span; index += 1) {
+      const centered = span === 1 ? 0 : index - (span - 1) / 2;
+      cluster.push({
+        dx: centered * spacingX,
+        dy: r * 0.32,
+        scale: 0.94
+      });
+    }
 
-    // Front face
-    gfx.fillStyle(frontColor, 1);
-    gfx.beginPath();
-    gfx.moveTo(left, topY);
-    gfx.lineTo(left + d, topY + d);
-    gfx.lineTo(left + d, topY + d + h);
-    gfx.lineTo(left, topY + h);
-    gfx.closePath();
-    gfx.fillPath();
+    // Use raw canvas 2D for radial gradient if available
+    const ctx = (gfx as unknown as { context?: CanvasRenderingContext2D })
+      .context;
 
-    // Right face (darkest)
-    gfx.fillStyle(rightColor, 1);
-    gfx.beginPath();
-    gfx.moveTo(right, topY);
-    gfx.lineTo(right + d, topY + d);
-    gfx.lineTo(right + d, topY + d + h);
-    gfx.lineTo(right, topY + h);
-    gfx.closePath();
-    gfx.fillPath();
+    if (ctx) {
+      ctx.save();
+      cluster.forEach((bead, index) => {
+        const bx = cx + bead.dx;
+        const by = cy + bead.dy;
+        const br = r * bead.scale;
 
-    // Top edge highlight
-    gfx.lineStyle(1, 0xffffff, 0.35);
-    gfx.beginPath();
-    gfx.moveTo(left, topY);
-    gfx.lineTo(right, topY);
-    gfx.strokePath();
+        const shadowGrad = ctx.createRadialGradient(
+          bx,
+          by + br * 0.18,
+          br * 0.25,
+          bx,
+          by + br * 0.18,
+          br * 1.06
+        );
+        shadowGrad.addColorStop(0, "rgba(0,0,0,0)");
+        shadowGrad.addColorStop(1, "rgba(0,0,0,0.18)");
+        ctx.fillStyle = shadowGrad;
+        ctx.beginPath();
+        ctx.arc(bx, by, br * 1.08, 0, Math.PI * 2);
+        ctx.fill();
 
-    // Outline
-    gfx.lineStyle(1, 0x000000, 0.2);
-    gfx.beginPath();
-    gfx.moveTo(left, topY);
-    gfx.lineTo(right, topY);
-    gfx.lineTo(right + d, topY + d);
-    gfx.lineTo(left + d, topY + d);
-    gfx.closePath();
-    gfx.strokePath();
+        const bodyGrad = ctx.createRadialGradient(
+          bx - br * 0.32,
+          by - br * 0.34,
+          0,
+          bx,
+          by,
+          br
+        );
+        bodyGrad.addColorStop(0, `rgb(${Math.min(255, ((color >> 16) & 0xff) + 92)},${Math.min(255, ((color >> 8) & 0xff) + 92)},${Math.min(255, (color & 0xff) + 92)})`);
+        bodyGrad.addColorStop(0.54, `rgb(${(color >> 16) & 0xff},${(color >> 8) & 0xff},${color & 0xff})`);
+        bodyGrad.addColorStop(
+          1,
+          `rgb(${Math.round(((color >> 16) & 0xff) * 0.45)},${Math.round(((color >> 8) & 0xff) * 0.45)},${Math.round((color & 0xff) * 0.45)})`
+        );
 
-    gfx.beginPath();
-    gfx.moveTo(left, topY);
-    gfx.lineTo(left, topY + h);
-    gfx.lineTo(left + d, topY + d + h);
-    gfx.moveTo(right, topY);
-    gfx.lineTo(right, topY + h);
-    gfx.lineTo(right + d, topY + d + h);
-    gfx.strokePath();
+        ctx.fillStyle = bodyGrad;
+        ctx.beginPath();
+        ctx.arc(bx, by, br, 0, Math.PI * 2);
+        ctx.fill();
+
+        const specGrad = ctx.createRadialGradient(
+          bx - br * 0.34,
+          by - br * 0.38,
+          0,
+          bx - br * 0.34,
+          by - br * 0.38,
+          br * 0.48
+        );
+        specGrad.addColorStop(0, index === 4 ? "rgba(255,255,255,0.62)" : "rgba(255,255,255,0.48)");
+        specGrad.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = specGrad;
+        ctx.beginPath();
+        ctx.arc(bx, by, br, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = "rgba(0,0,0,0.18)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(bx, by, br, 0, Math.PI * 2);
+        ctx.stroke();
+      });
+
+      ctx.restore();
+    } else {
+      cluster.forEach((bead, index) => {
+        const bx = cx + bead.dx;
+        const by = cy + bead.dy;
+        const br = r * bead.scale;
+
+        gfx.fillStyle(tintBrightness(color, 0.52), 0.3);
+        gfx.fillCircle(bx, by + br * 0.12, br * 1.06);
+        gfx.fillStyle(tintBrightness(color, 0.68), 1);
+        gfx.fillCircle(bx, by, br);
+        gfx.fillStyle(tintBrightness(color, 1.05), 1);
+        gfx.fillCircle(bx, by, br * 0.88);
+        gfx.fillStyle(0xffffff, index === 4 ? 0.48 : 0.34);
+        gfx.fillCircle(bx - br * 0.28, by - br * 0.3, br * 0.24);
+        gfx.lineStyle(1, 0x000000, 0.2);
+        gfx.strokeCircle(bx, by, br);
+      });
+    }
   }
+
+  // ---- seats -------------------------------------------------------------
 
   private createSeats(): void {
     this.laneStates = [];
     for (let lane = 0; lane < this.level.seatCount; lane += 1) {
-      const x = this.getLaneX(lane);
-      const pad = this.add.ellipse(x, SEAT_Y + 10, 70, 20, 0x000000, 0.3);
-      const ring = this.add.ellipse(x, SEAT_Y, 64, 20, 0xffffff, 0.12);
-      ring.setStrokeStyle(2, 0xffffff, 0.3);
+      const seatPoint = projectSeat(lane, this.level.seatCount);
+      const pad = this.add.ellipse(seatPoint.x, seatPoint.y + 10, 62, 16, 0x000000, 0.25);
+      const ring = this.add.ellipse(seatPoint.x, seatPoint.y, 56, 16, 0xffffff, 0.08);
+      ring.setStrokeStyle(2, 0xffffff, 0.2);
 
       const seatColor = this.level.wallColors[lane]?.[0] ?? 0xffffff;
 
       this.seats.push({
         lane,
-        x,
-        y: SEAT_Y,
+        x: seatPoint.x,
+        y: seatPoint.y,
         pad,
         ring,
         occupied: false
@@ -307,32 +481,37 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  // ---- reserve units (sphere style) --------------------------------------
+
   private createReserveUnits(): void {
-    this.reserveUnits = this.level.reserveUnits.map((spec, index) => {
-      const col = index % 6;
-      const row = Math.floor(index / 6);
-      const x = 84 + col * 72;
-      const y = 840 + row * 80;
+    const colorOrder = uniqueColors(this.level.reserveUnits, (spec) => spec.tint);
+    const queueCounts = new Map<number, number>();
+    this.reserveUnits = this.level.reserveUnits.map((spec) => {
+      const { x, y } = this.reservePos(spec.tint, queueCounts, colorOrder);
       const container = this.add.container(x, y);
-      const glow = this.add.circle(0, 34, 26, 0xffffff, 0.16);
-      const body = this.add.circle(0, 12, 22, spec.tint, 1);
-      body.setStrokeStyle(3, 0xffffff, 0.3);
+
+      // Ground shadow ellipse
+      const shadow = this.add.ellipse(0, 22, 34, 10, 0x000000, 0.25);
+      // Sphere body
+      const body = this.add.circle(0, 4, 19, spec.tint, 1);
+      body.setStrokeStyle(2, 0xffffff, 0.22);
+      // Specular highlight
+      const highlight = this.add.circle(-6, -5, 6, 0xffffff, 0.38);
+      // Ammo label above
       const label = this.add
-        .text(0, -18, String(spec.label), {
+        .text(0, -24, String(spec.ammo), {
           fontFamily: "Trebuchet MS, Arial, sans-serif",
-          fontSize: "16px",
+          fontSize: "14px",
           fontStyle: "700",
-          color: "#f5f7fb"
+          color: "#f0f2f6"
         })
         .setOrigin(0.5);
 
-      const legLeft = this.add.rectangle(-10, 42, 9, 12, spec.tint, 1);
-      const legRight = this.add.rectangle(10, 42, 9, 12, spec.tint, 1);
-      container.add([glow, body, label, legLeft, legRight]);
-      container.setSize(68, 88);
+      container.add([shadow, body, highlight, label]);
+      container.setSize(50, 66);
       container.setInteractive(
-        new Phaser.Geom.Rectangle(-34, -32, 68, 88),
-        Phaser.Geom.Rectangle.Contains
+        new Phaser.Geom.Circle(0, 4, 26),
+        Phaser.Geom.Circle.Contains
       );
       container.on("pointerdown", () => this.handleReserveUnitClick(view));
 
@@ -340,6 +519,25 @@ export class GameScene extends Phaser.Scene {
       return view;
     });
   }
+
+  private reservePos(
+    tint: number,
+    queueCounts: Map<number, number>,
+    colorOrder: number[]
+  ): { x: number; y: number } {
+    const colorIndex = Math.max(0, colorOrder.indexOf(tint));
+    const laneT = colorOrder.length > 1 ? colorIndex / (colorOrder.length - 1) : 0;
+    const anchor = lerpPoint(RESERVE_QUEUE_BASE_LEFT, RESERVE_QUEUE_BASE_RIGHT, laneT);
+    const queueDepth = queueCounts.get(tint) ?? 0;
+    queueCounts.set(tint, queueDepth + 1);
+
+    return {
+      x: anchor.x + queueDepth * RESERVE_QUEUE_DRIFT_X,
+      y: anchor.y + queueDepth * RESERVE_QUEUE_DROP_Y
+    };
+  }
+
+  // ---- deploy / attack / dismiss (logic preserved) -----------------------
 
   private handleReserveUnitClick(unitView: ReserveUnitView): void {
     if (this.resultState !== "running") {
@@ -349,8 +547,13 @@ export class GameScene extends Phaser.Scene {
     const seatIndex = findBestSeat(
       {
         seats: this.laneStates,
-        wallColumns: this.wallByLane.map((cells) =>
-          cells.filter((cell) => !cell.state.destroyed).map((cell) => cell.state.hp)
+        wallColumns: this.level.wallColumns.map((col, lane) =>
+          col.filter(
+            (_, layer) =>
+              !this.wallCells.find(
+                (c) => c.state.lane === lane && c.state.layer === layer
+              )?.state.destroyed
+          )
         ),
         wallColors: this.level.wallColors,
         seatColors: this.laneStates.map((s) => s.color)
@@ -395,30 +598,33 @@ export class GameScene extends Phaser.Scene {
     const seat = this.seats[seatIndex];
     seat.occupied = true;
     this.laneStates[seatIndex].occupied = true;
-    seat.ring.setFillStyle(0xffffff, 0.24);
+    seat.ring.setFillStyle(0xffffff, 0.22);
 
-    const glow = this.add.circle(0, 22, 28, 0xffffff, 0.12);
-    const body = this.add.circle(0, 0, 24, spec.tint, 1);
-    body.setStrokeStyle(3, 0xffffff, 0.35);
+    const glow = this.add.circle(0, 16, 26, 0xffffff, 0.1);
+    const body = this.add.circle(0, 0, 22, spec.tint, 1);
+    body.setStrokeStyle(2, 0xffffff, 0.3);
+    const highlight = this.add.circle(-6, -6, 6, 0xffffff, 0.32);
     const label = this.add
-      .text(0, -28, String(spec.label), {
+      .text(0, -26, String(spec.ammo), {
         fontFamily: "Trebuchet MS, Arial, sans-serif",
-        fontSize: "17px",
+        fontSize: "16px",
         fontStyle: "700",
         color: "#ffffff"
       })
       .setOrigin(0.5);
-    const container = this.add.container(
-      reserveContainer.x,
-      reserveContainer.y,
-      [glow, body, label]
-    );
+    const container = this.add.container(reserveContainer.x, reserveContainer.y, [
+      glow,
+      body,
+      highlight,
+      label
+    ]);
     container.setScale(0.85);
 
     const actor: UnitActor = {
       spec,
       lane: seat.lane,
       state: "deploying",
+      ammoLeft: spec.ammo,
       container,
       glow,
       body,
@@ -466,20 +672,27 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    const laneCells = this.wallByLane[seat.lane];
-    const target = findFrontTarget(
-      laneCells.map((cell) => cell.state),
-      actor.spec.tint
+    const target = findColorTarget(
+      this.wallCells.map((c) => c.state),
+      actor.spec.tint,
+      actor.lane
     );
-
     if (!target) {
-      actor.attackTimer?.remove(false);
       return;
     }
 
-    const targetView = laneCells.find((cell) => cell.state.layer === target.layer);
+    const targetView = this.wallCells.find((c) => c.state === target);
     if (!targetView) {
       return;
+    }
+
+    // Consume one ammo
+    actor.ammoLeft -= 1;
+    actor.label.setText(String(actor.ammoLeft));
+
+    const isLastShot = actor.ammoLeft <= 0;
+    if (isLastShot) {
+      actor.state = "expiring";
     }
 
     actor.glow.setFillStyle(0xffffff, 0.24);
@@ -489,11 +702,11 @@ export class GameScene extends Phaser.Scene {
       duration: 120
     });
 
-    const targetX = targetView.hpText.x;
-    const targetY = targetView.hpText.y;
+    const targetX = targetView.screenX;
+    const targetY = targetView.screenY;
 
-    const bullet = this.add.circle(seat.x, seat.y - 22, 6, 0xffffff, 1);
-    bullet.setStrokeStyle(2, actor.spec.tint, 0.95);
+    const bullet = this.add.circle(seat.x, seat.y - 18, 5, 0xffffff, 1);
+    bullet.setStrokeStyle(2, actor.spec.tint, 0.9);
     this.bullets.add(bullet);
 
     this.tweens.add({
@@ -504,66 +717,70 @@ export class GameScene extends Phaser.Scene {
       ease: "Quad.Out",
       onComplete: () => {
         bullet.destroy();
-        // Apply damage directly to the targeted cell (already resolved at fire time)
-        // to avoid race conditions where another bullet changes state mid-flight.
         target.hp = Math.max(0, target.hp - actor.spec.damage);
         if (target.hp === 0) {
           target.destroyed = true;
         }
         this.updateWallCell(targetView);
-        this.checkEndConditions();
+        if (isLastShot) {
+          this.dismissActor(seat);
+        } else {
+          this.checkEndConditions();
+        }
       }
     });
   }
 
-  private updateWallCell(cell: WallCellView): void {
-    cell.hpText.setText(String(cell.state.hp));
-
-    if (!cell.state.destroyed) {
-      // Kill any running tween on this text to avoid stacking
-      this.tweens.killTweensOf(cell.hpText);
-      cell.hpText.setScale(1);
-      this.tweens.add({
-        targets: cell.hpText,
-        scale: 1.2,
-        duration: 60,
-        yoyo: true
-      });
+  private dismissActor(seat: SeatView): void {
+    const actor = seat.actor;
+    if (!actor) {
       return;
     }
 
-    const cx = cell.hpText.x;
-    const cy = cell.hpText.y;
-    this.spawnBurst(cx, cy, cell.state.color);
+    actor.attackTimer?.remove(false);
+    actor.container.destroy();
+    seat.actor = undefined;
+    seat.occupied = false;
+    this.laneStates[seat.lane].occupied = false;
+    seat.ring.setFillStyle(0xffffff, 0.08);
+    this.checkEndConditions();
+  }
 
-    // Immediately hide to avoid alpha-tween flickering the entire column
-    cell.gfx.setVisible(false);
-    cell.hpText.setVisible(false);
-    cell.gfx.destroy();
-    cell.hpText.destroy();
+  // ---- wall cell update ---------------------------------------------------
+
+  private updateWallCell(cell: WallCellView): void {
+    if (!cell.state.destroyed) {
+      return;
+    }
+
+    this.spawnBurst(cell.screenX, cell.screenY, cell.state.color);
+    this.redrawWall();
+    this.checkEndConditions();
   }
 
   private spawnBurst(x: number, y: number, tint: number): void {
-    for (let i = 0; i < 8; i += 1) {
-      const particle = this.add.circle(x, y, Phaser.Math.Between(3, 6), tint, 0.95);
+    for (let i = 0; i < 10; i += 1) {
+      const r = Phaser.Math.Between(3, 7);
+      const particle = this.add.circle(x, y, r, tint, 0.9);
       this.tweens.add({
         targets: particle,
-        x: x + Phaser.Math.Between(-28, 28),
-        y: y + Phaser.Math.Between(-18, 22),
+        x: x + Phaser.Math.Between(-30, 30),
+        y: y + Phaser.Math.Between(-20, 24),
         alpha: 0,
-        scale: 0.4,
-        duration: 260,
+        scale: 0.3,
+        duration: 280,
         onComplete: () => particle.destroy()
       });
     }
   }
 
+  // ---- reserve reflow -----------------------------------------------------
+
   private reflowReserveUnits(): void {
-    this.reserveUnits.forEach((unit, index) => {
-      const col = index % 6;
-      const row = Math.floor(index / 6);
-      const x = 84 + col * 72;
-      const y = 840 + row * 80;
+    const colorOrder = uniqueColors(this.level.reserveUnits, (spec) => spec.tint);
+    const queueCounts = new Map<number, number>();
+    this.reserveUnits.forEach((unit) => {
+      const { x, y } = this.reservePos(unit.spec.tint, queueCounts, colorOrder);
       this.tweens.add({
         targets: unit.container,
         x,
@@ -574,36 +791,65 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  // ---- end conditions (identical logic to original) -----------------------
+
   private checkEndConditions(): void {
-    const remainingCells = this.wallByLane
-      .flat()
-      .filter((cell) => !cell.state.destroyed);
+    const remainingCells = this.wallCells.filter((c) => !c.state.destroyed);
     if (remainingCells.length === 0) {
       this.finishLevel("win");
       return;
     }
 
-    if (this.reserveUnits.length > 0) {
+    const allCellStates = remainingCells.map((c) => c.state);
+
+    const canSeatDealDamage = this.seats.some(
+      (seat) =>
+        seat.actor &&
+        seat.actor.state === "attacking" &&
+        seat.actor.ammoLeft > 0 &&
+        hasColorTarget(allCellStates, seat.actor.spec.tint)
+    );
+
+    const reserveColors = this.reserveUnits.map((u) => u.spec.tint);
+    const canReserveChange = canReservesDeployAndAttack(
+      reserveColors,
+      allCellStates,
+      this.laneStates
+    );
+
+    if (canSeatDealDamage || canReserveChange) {
+      if (this.loseTimer) {
+        this.loseTimer.remove(false);
+        this.loseTimer = undefined;
+      }
       return;
     }
 
-    const hasOpenLane = this.seats.some((seat) => {
-      const laneHasWall = this.wallByLane[seat.lane].some(
-        (cell) => !cell.state.destroyed
-      );
-      return laneHasWall && !seat.occupied;
-    });
-
-    if (hasOpenLane && !this.loseTimer) {
+    if (!this.loseTimer) {
       this.loseTimer = this.time.delayedCall(1400, () => {
-        const stillOpenLane = this.seats.some((seat) => {
-          const laneHasWall = this.wallByLane[seat.lane].some(
-            (cell) => !cell.state.destroyed
-          );
-          return laneHasWall && !seat.occupied;
-        });
-        if (stillOpenLane) {
+        const cells = this.wallCells.filter((c) => !c.state.destroyed);
+        if (cells.length === 0) {
+          this.finishLevel("win");
+          return;
+        }
+        const states = cells.map((c) => c.state);
+        const seatCan = this.seats.some(
+          (s) =>
+            s.actor &&
+            s.actor.state === "attacking" &&
+            s.actor.ammoLeft > 0 &&
+            hasColorTarget(states, s.actor.spec.tint)
+        );
+        const rColors = this.reserveUnits.map((u) => u.spec.tint);
+        const reserveCan = canReservesDeployAndAttack(
+          rColors,
+          states,
+          this.laneStates
+        );
+        if (!seatCan && !reserveCan) {
           this.finishLevel("lose");
+        } else {
+          this.loseTimer = undefined;
         }
       });
     }
@@ -622,14 +868,7 @@ export class GameScene extends Phaser.Scene {
 
   private showOverlay(result: "win" | "lose"): void {
     const container = this.add.container(0, 0);
-    const dim = this.add.rectangle(
-      0,
-      0,
-      GAME_WIDTH,
-      GAME_HEIGHT,
-      0x04070b,
-      0.64
-    );
+    const dim = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x04070b, 0.64);
     dim.setOrigin(0);
     const panel = this.add.rectangle(CENTER_X, 470, 320, 220, 0x111722, 0.94);
     panel.setStrokeStyle(2, 0xffffff, 0.18);
@@ -679,6 +918,8 @@ export class GameScene extends Phaser.Scene {
     this.overlay = container;
   }
 
+  // ---- HUD ---------------------------------------------------------------
+
   private updateHud(): void {
     const occupied = this.seats.filter((seat) => seat.occupied).length;
     const left = this.reserveUnits.length;
@@ -686,18 +927,10 @@ export class GameScene extends Phaser.Scene {
       `待命 ${left}  |  战斗席位 ${occupied}/${this.level.seatCount}`
     );
   }
-
-  private getLaneX(lane: number): number {
-    return (
-      CENTER_X -
-      ((this.level.lanes - 1) * LANE_SPACING) / 2 +
-      lane * LANE_SPACING
-    );
-  }
 }
 
 export const gameConfig: Phaser.Types.Core.GameConfig = {
-  type: Phaser.AUTO,
+  type: Phaser.CANVAS,
   width: GAME_WIDTH,
   height: GAME_HEIGHT,
   parent: "app",

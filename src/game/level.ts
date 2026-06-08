@@ -1,5 +1,5 @@
 export type UnitSpec = {
-  label: number;
+  ammo: number;
   damage: number;
   attackInterval: number;
   deployDuration: number;
@@ -14,7 +14,7 @@ export type LevelConfig = {
   reserveUnits: UnitSpec[];
 };
 
-const laneColors = [0xff5555, 0xf5c842, 0x66cc66, 0x5599ff, 0xaa66dd];
+const laneColors = [0x7340e6, 0x2d3b49, 0xf2f4fb, 0xe24d4d, 0xb7eb45];
 
 export const levelOne: LevelConfig = {
   seatCount: 5,
@@ -33,11 +33,11 @@ export const levelOne: LevelConfig = {
     Array(8).fill(laneColors[3]),
     Array(7).fill(laneColors[4])
   ],
-  reserveUnits: Array.from({ length: 12 }, (_, index) => {
+  reserveUnits: Array.from({ length: 10 }, (_, index) => {
     const tint = laneColors[index % laneColors.length];
     return {
-      label: 200,
-      damage: 2 + (index % 3),
+      ammo: 56,
+      damage: 1,
       attackInterval: 240 - (index % 3) * 18,
       deployDuration: 280,
       tint
