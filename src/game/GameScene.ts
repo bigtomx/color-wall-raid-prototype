@@ -60,22 +60,22 @@ const GAME_HEIGHT = 960;
 const CENTER_X = GAME_WIDTH / 2;
 
 // Board projection
-const WALL_BACK_LEFT: Point = { x: 126, y: 124 };
-const WALL_BACK_RIGHT: Point = { x: 416, y: 108 };
-const WALL_FRONT_LEFT: Point = { x: 38, y: 456 };
-const WALL_FRONT_RIGHT: Point = { x: 502, y: 434 };
+const WALL_BACK_LEFT: Point = { x: 205, y: 80 };
+const WALL_BACK_RIGHT: Point = { x: 335, y: 68 };
+const WALL_FRONT_LEFT: Point = { x: 14, y: 650 };
+const WALL_FRONT_RIGHT: Point = { x: 526, y: 634 };
 const WALL_GRID_ROWS = 8;
-const WALL_BEAD_BACK = 10;
-const WALL_BEAD_FRONT = 18;
-const WALL_LANE_SPANS = [3, 3, 4, 3, 4];
+const WALL_BEAD_BACK = 5;
+const WALL_BEAD_FRONT = 10;
+const WALL_LANE_BALL_SCALE = [1.0, 0.95, 1.1, 0.95, 1.05];
 
 // Seat / reserve projection
-const SEAT_FRONT_LEFT: Point = { x: 88, y: 564 };
-const SEAT_FRONT_RIGHT: Point = { x: 450, y: 546 };
-const RESERVE_QUEUE_BASE_LEFT: Point = { x: 72, y: 712 };
-const RESERVE_QUEUE_BASE_RIGHT: Point = { x: 468, y: 700 };
-const RESERVE_QUEUE_DROP_Y = 70;
-const RESERVE_QUEUE_DRIFT_X = 13;
+const SEAT_FRONT_LEFT: Point = { x: 40, y: 748 };
+const SEAT_FRONT_RIGHT: Point = { x: 500, y: 736 };
+const RESERVE_QUEUE_BASE_LEFT: Point = { x: 36, y: 894 };
+const RESERVE_QUEUE_BASE_RIGHT: Point = { x: 504, y: 880 };
+const RESERVE_QUEUE_DROP_Y = 58;
+const RESERVE_QUEUE_DRIFT_X = 12;
 
 // --- Helpers -------------------------------------------------------------
 
@@ -102,7 +102,8 @@ function projectWall(
   layer: number,
   totalLanes: number
 ): { x: number; y: number; radius: number; depthScale: number } {
-  const rowT = (WALL_GRID_ROWS - 1) > 0 ? layer / (WALL_GRID_ROWS - 1) : 0;
+  const rawT = (WALL_GRID_ROWS - 1) > 0 ? layer / (WALL_GRID_ROWS - 1) : 0;
+  const rowT = Math.pow(rawT, 1.3);
   const laneT = totalLanes > 1 ? lane / (totalLanes - 1) : 0;
   const leftEdge = lerpPoint(WALL_BACK_LEFT, WALL_FRONT_LEFT, rowT);
   const rightEdge = lerpPoint(WALL_BACK_RIGHT, WALL_FRONT_RIGHT, rowT);
@@ -113,12 +114,12 @@ function projectWall(
     x: base.x,
     y: base.y,
     radius,
-    depthScale: lerp(0.72, 1, rowT)
+    depthScale: lerp(0.62, 1, rowT)
   };
 }
 
-function getLaneSpan(lane: number): number {
-  return WALL_LANE_SPANS[lane] ?? WALL_LANE_SPANS[WALL_LANE_SPANS.length - 1] ?? 3;
+function getLaneBallScale(lane: number): number {
+  return WALL_LANE_BALL_SCALE[lane] ?? 1;
 }
 
 function projectSeat(lane: number, totalSeats: number): Point {
@@ -208,7 +209,7 @@ export class GameScene extends Phaser.Scene {
 
     const glow = this.add.graphics();
     glow.fillGradientStyle(0x8a4e48, 0x704039, 0x3f2426, 0x261519, 0.3);
-    glow.fillEllipse(CENTER_X, 238, 470, 360);
+    glow.fillEllipse(CENTER_X, 340, 420, 500);
 
     const wallGround = this.add.graphics();
     wallGround.fillStyle(0x342021, 1);
@@ -225,13 +226,33 @@ export class GameScene extends Phaser.Scene {
     surfaceEdge.beginPath();
     surfaceEdge.moveTo(WALL_BACK_LEFT.x, WALL_BACK_LEFT.y);
     surfaceEdge.lineTo(WALL_BACK_RIGHT.x, WALL_BACK_RIGHT.y);
-    surfaceEdge.lineTo(WALL_BACK_RIGHT.x + 10, WALL_BACK_RIGHT.y + 18);
-    surfaceEdge.lineTo(WALL_BACK_LEFT.x + 10, WALL_BACK_LEFT.y + 18);
+    surfaceEdge.lineTo(WALL_BACK_RIGHT.x + 8, WALL_BACK_RIGHT.y + 16);
+    surfaceEdge.lineTo(WALL_BACK_LEFT.x + 8, WALL_BACK_LEFT.y + 16);
     surfaceEdge.closePath();
     surfaceEdge.fillPath();
 
+    const leftWall = this.add.graphics();
+    leftWall.fillStyle(0x2a1818, 0.85);
+    leftWall.beginPath();
+    leftWall.moveTo(WALL_BACK_LEFT.x, WALL_BACK_LEFT.y);
+    leftWall.lineTo(WALL_FRONT_LEFT.x, WALL_FRONT_LEFT.y);
+    leftWall.lineTo(WALL_FRONT_LEFT.x + 8, WALL_FRONT_LEFT.y + 16);
+    leftWall.lineTo(WALL_BACK_LEFT.x + 8, WALL_BACK_LEFT.y + 16);
+    leftWall.closePath();
+    leftWall.fillPath();
+
+    const rightWall = this.add.graphics();
+    rightWall.fillStyle(0x2a1818, 0.85);
+    rightWall.beginPath();
+    rightWall.moveTo(WALL_BACK_RIGHT.x, WALL_BACK_RIGHT.y);
+    rightWall.lineTo(WALL_FRONT_RIGHT.x, WALL_FRONT_RIGHT.y);
+    rightWall.lineTo(WALL_FRONT_RIGHT.x + 8, WALL_FRONT_RIGHT.y + 16);
+    rightWall.lineTo(WALL_BACK_RIGHT.x + 8, WALL_BACK_RIGHT.y + 16);
+    rightWall.closePath();
+    rightWall.fillPath();
+
     const rim = this.add.graphics();
-    rim.lineStyle(4, 0x8f4b48, 0.9);
+    rim.lineStyle(4, 0x8f4b48, 0.95);
     rim.beginPath();
     rim.moveTo(WALL_FRONT_LEFT.x, WALL_FRONT_LEFT.y);
     rim.lineTo(WALL_FRONT_RIGHT.x, WALL_FRONT_RIGHT.y);
@@ -245,14 +266,14 @@ export class GameScene extends Phaser.Scene {
     battlefield.beginPath();
     battlefield.moveTo(WALL_FRONT_LEFT.x, WALL_FRONT_LEFT.y);
     battlefield.lineTo(WALL_FRONT_RIGHT.x, WALL_FRONT_RIGHT.y);
-    battlefield.lineTo(GAME_WIDTH - 26, 646);
-    battlefield.lineTo(28, 646);
+    battlefield.lineTo(GAME_WIDTH - 8, 820);
+    battlefield.lineTo(8, 820);
     battlefield.closePath();
     battlefield.fillPath();
 
     const lower = this.add.graphics();
     lower.fillGradientStyle(0x1f0f11, 0x1b0d10, 0x15090d, 0x10070b, 1);
-    lower.fillRoundedRect(16, 660, GAME_WIDTH - 32, 290, 24);
+    lower.fillRoundedRect(16, 836, GAME_WIDTH - 32, 112, 20);
   }
 
   // ---- HUD frame ---------------------------------------------------------
@@ -276,7 +297,7 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     this.statusText = this.add
-      .text(CENTER_X, 668, "", {
+      .text(CENTER_X, 822, "", {
         fontFamily: "Trebuchet MS, Arial, sans-serif",
         fontSize: "15px",
         color: "#fdf4c8"
@@ -336,8 +357,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Draw one wall sphere with radial gradient (canvas 2D) or
-   * layered circles (fallback) for a 3D ball look.
+   * Draw one wall cell as a dense cluster of hex-packed small 3D balls.
+   * Each ball has a radial gradient body + specular highlight.
+   * Cells are drawn back-to-front so nearer balls occlude farther ones.
    */
   private drawSphere(
     gfx: Phaser.GameObjects.Graphics,
@@ -345,115 +367,84 @@ export class GameScene extends Phaser.Scene {
   ): void {
     const { screenX: cx, screenY: cy, radius: r } = cell;
     const color = cell.state.color;
-    const span = getLaneSpan(cell.state.lane);
-    const spacingX = r * 1.06;
-    const backCount = Math.max(1, span - 1);
-    const cluster: Array<{ dx: number; dy: number; scale: number }> = [];
+    const br = r * getLaneBallScale(cell.state.lane);
+    const spacing = br * 1.6;
+    const rowH = br * 1.4;
 
-    for (let index = 0; index < backCount; index += 1) {
-      const centered = backCount === 1 ? 0 : index - (backCount - 1) / 2;
-      cluster.push({
-        dx: centered * spacingX + r * 0.44,
-        dy: -r * 0.48,
-        scale: 0.76
-      });
-    }
-
-    for (let index = 0; index < span; index += 1) {
-      const centered = span === 1 ? 0 : index - (span - 1) / 2;
-      cluster.push({
-        dx: centered * spacingX,
-        dy: r * 0.32,
-        scale: 0.94
-      });
-    }
-
-    // Use raw canvas 2D for radial gradient if available
     const ctx = (gfx as unknown as { context?: CanvasRenderingContext2D })
       .context;
 
+    const cr = (color >> 16) & 0xff;
+    const cg = (color >> 8) & 0xff;
+    const cb = color & 0xff;
+    const hiR = Math.min(255, cr + 100);
+    const hiG = Math.min(255, cg + 100);
+    const hiB = Math.min(255, cb + 100);
+    const loR = Math.round(cr * 0.42);
+    const loG = Math.round(cg * 0.42);
+    const loB = Math.round(cb * 0.42);
+
     if (ctx) {
       ctx.save();
-      cluster.forEach((bead, index) => {
-        const bx = cx + bead.dx;
-        const by = cy + bead.dy;
-        const br = r * bead.scale;
+      let row = 0;
+      for (let dy = -r; dy <= r + 0.01; dy += rowH) {
+        const offsetX = (row % 2) * spacing * 0.5;
+        for (let dx = -r - spacing; dx <= r + spacing + 0.01; dx += spacing) {
+          const bx = cx + dx + offsetX;
+          const by = cy + dy;
 
-        const shadowGrad = ctx.createRadialGradient(
-          bx,
-          by + br * 0.18,
-          br * 0.25,
-          bx,
-          by + br * 0.18,
-          br * 1.06
-        );
-        shadowGrad.addColorStop(0, "rgba(0,0,0,0)");
-        shadowGrad.addColorStop(1, "rgba(0,0,0,0.18)");
-        ctx.fillStyle = shadowGrad;
-        ctx.beginPath();
-        ctx.arc(bx, by, br * 1.08, 0, Math.PI * 2);
-        ctx.fill();
+          const bodyGrad = ctx.createRadialGradient(
+            bx - br * 0.3,
+            by - br * 0.3,
+            0,
+            bx,
+            by,
+            br
+          );
+          bodyGrad.addColorStop(0, `rgb(${hiR},${hiG},${hiB})`);
+          bodyGrad.addColorStop(0.55, `rgb(${cr},${cg},${cb})`);
+          bodyGrad.addColorStop(1, `rgb(${loR},${loG},${loB})`);
+          ctx.fillStyle = bodyGrad;
+          ctx.beginPath();
+          ctx.arc(bx, by, br, 0, Math.PI * 2);
+          ctx.fill();
 
-        const bodyGrad = ctx.createRadialGradient(
-          bx - br * 0.32,
-          by - br * 0.34,
-          0,
-          bx,
-          by,
-          br
-        );
-        bodyGrad.addColorStop(0, `rgb(${Math.min(255, ((color >> 16) & 0xff) + 92)},${Math.min(255, ((color >> 8) & 0xff) + 92)},${Math.min(255, (color & 0xff) + 92)})`);
-        bodyGrad.addColorStop(0.54, `rgb(${(color >> 16) & 0xff},${(color >> 8) & 0xff},${color & 0xff})`);
-        bodyGrad.addColorStop(
-          1,
-          `rgb(${Math.round(((color >> 16) & 0xff) * 0.45)},${Math.round(((color >> 8) & 0xff) * 0.45)},${Math.round((color & 0xff) * 0.45)})`
-        );
-
-        ctx.fillStyle = bodyGrad;
-        ctx.beginPath();
-        ctx.arc(bx, by, br, 0, Math.PI * 2);
-        ctx.fill();
-
-        const specGrad = ctx.createRadialGradient(
-          bx - br * 0.34,
-          by - br * 0.38,
-          0,
-          bx - br * 0.34,
-          by - br * 0.38,
-          br * 0.48
-        );
-        specGrad.addColorStop(0, index === 4 ? "rgba(255,255,255,0.62)" : "rgba(255,255,255,0.48)");
-        specGrad.addColorStop(1, "rgba(255,255,255,0)");
-        ctx.fillStyle = specGrad;
-        ctx.beginPath();
-        ctx.arc(bx, by, br, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.strokeStyle = "rgba(0,0,0,0.18)";
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.arc(bx, by, br, 0, Math.PI * 2);
-        ctx.stroke();
-      });
-
+          const specGrad = ctx.createRadialGradient(
+            bx - br * 0.32,
+            by - br * 0.35,
+            0,
+            bx - br * 0.32,
+            by - br * 0.35,
+            br * 0.45
+          );
+          specGrad.addColorStop(0, "rgba(255,255,255,0.45)");
+          specGrad.addColorStop(1, "rgba(255,255,255,0)");
+          ctx.fillStyle = specGrad;
+          ctx.beginPath();
+          ctx.arc(bx, by, br, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        row += 1;
+      }
       ctx.restore();
     } else {
-      cluster.forEach((bead, index) => {
-        const bx = cx + bead.dx;
-        const by = cy + bead.dy;
-        const br = r * bead.scale;
-
-        gfx.fillStyle(tintBrightness(color, 0.52), 0.3);
-        gfx.fillCircle(bx, by + br * 0.12, br * 1.06);
-        gfx.fillStyle(tintBrightness(color, 0.68), 1);
-        gfx.fillCircle(bx, by, br);
-        gfx.fillStyle(tintBrightness(color, 1.05), 1);
-        gfx.fillCircle(bx, by, br * 0.88);
-        gfx.fillStyle(0xffffff, index === 4 ? 0.48 : 0.34);
-        gfx.fillCircle(bx - br * 0.28, by - br * 0.3, br * 0.24);
-        gfx.lineStyle(1, 0x000000, 0.2);
-        gfx.strokeCircle(bx, by, br);
-      });
+      let row = 0;
+      for (let dy = -r; dy <= r + 0.01; dy += rowH) {
+        const offsetX = (row % 2) * spacing * 0.5;
+        for (let dx = -r - spacing; dx <= r + spacing + 0.01; dx += spacing) {
+          const bx = cx + dx + offsetX;
+          const by = cy + dy;
+          gfx.fillStyle(tintBrightness(color, 0.52), 0.4);
+          gfx.fillCircle(bx, by + br * 0.1, br * 1.04);
+          gfx.fillStyle(color, 1);
+          gfx.fillCircle(bx, by, br);
+          gfx.fillStyle(tintBrightness(color, 1.08), 1);
+          gfx.fillCircle(bx, by, br * 0.82);
+          gfx.fillStyle(0xffffff, 0.32);
+          gfx.fillCircle(bx - br * 0.26, by - br * 0.28, br * 0.22);
+        }
+        row += 1;
+      }
     }
   }
 
