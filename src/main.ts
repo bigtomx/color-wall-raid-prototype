@@ -1,5 +1,5 @@
 import Phaser from "phaser";
-import { gameConfig } from "./game/GameScene";
+import { gameConfig } from "./game/AdBattlefieldScene";
 
 const style = document.createElement("style");
 style.textContent = `
