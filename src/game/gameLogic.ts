@@ -155,33 +155,16 @@ export function canReservesDeployAndAttack(
 
 export function findBestSeat(
   levelState: LevelState,
-  unitColor?: number
+  _unitColor?: number
 ): number | null {
-  const rankedSeats = levelState.seats
+  const leftmostOpenSeat = levelState.seats
     .map((seat, index) => ({
       index,
       lane: seat.lane,
-      occupied: seat.occupied,
-      seatColor: levelState.seatColors[seat.lane],
-      matchesUnitColor:
-        unitColor === undefined || levelState.seatColors[seat.lane] === unitColor,
-      remainingDurability: levelState.wallColumns[seat.lane].reduce(
-        (sum, hp) => sum + hp,
-        0
-      )
+      occupied: seat.occupied
     }))
     .filter((seat) => !seat.occupied)
-    .sort((left, right) => {
-      if (left.matchesUnitColor !== right.matchesUnitColor) {
-        return left.matchesUnitColor ? -1 : 1;
-      }
+    .sort((left, right) => left.lane - right.lane)[0];
 
-      if (right.remainingDurability !== left.remainingDurability) {
-        return right.remainingDurability - left.remainingDurability;
-      }
-
-      return left.lane - right.lane;
-    });
-
-  return rankedSeats[0]?.index ?? null;
+  return leftmostOpenSeat?.index ?? null;
 }

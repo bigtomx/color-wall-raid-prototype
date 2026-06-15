@@ -15,7 +15,7 @@ const RED = 0xff0000;
 const BLUE = 0x0000ff;
 
 describe("findBestSeat", () => {
-  test("picks the empty seat facing the largest remaining wall durability", () => {
+  test("picks the leftmost empty seat first", () => {
     const seatIndex = findBestSeat({
       seats: [
         { lane: 0, occupied: false, color: RED },
@@ -41,7 +41,7 @@ describe("findBestSeat", () => {
       seatColors: [RED, RED, RED, RED, RED]
     });
 
-    expect(seatIndex).toBe(3);
+    expect(seatIndex).toBe(0);
   });
 
   test("breaks ties from left to right", () => {
@@ -78,7 +78,7 @@ describe("findBestSeat", () => {
     expect(seatIndex).toBeNull();
   });
 
-  test("assigns unit to the seat matching its color", () => {
+  test("ignores unit color when a more-left empty seat exists", () => {
     const seatIndex = findBestSeat(
       {
         seats: [
@@ -93,25 +93,25 @@ describe("findBestSeat", () => {
       BLUE
     );
 
-    expect(seatIndex).toBe(1);
+    expect(seatIndex).toBe(0);
   });
 
-  test("falls back to any empty seat when same-color seat is occupied", () => {
+  test("falls back to the next leftmost empty seat when leftmost is occupied", () => {
     const seatIndex = findBestSeat(
       {
         seats: [
-          { lane: 0, occupied: false, color: RED },
-          { lane: 1, occupied: true, color: BLUE }
+          { lane: 0, occupied: true, color: RED },
+          { lane: 1, occupied: false, color: BLUE },
+          { lane: 2, occupied: false, color: RED }
         ],
-        wallColumns: [[10], [5]],
-        wallColors: [[RED], [BLUE]],
-        seatColors: [RED, BLUE]
+        wallColumns: [[10], [5], [8]],
+        wallColors: [[RED], [BLUE], [RED]],
+        seatColors: [RED, BLUE, RED]
       },
       BLUE
     );
 
-    // BLUE seat is occupied, so it falls back to the RED seat (lane 0)
-    expect(seatIndex).toBe(0);
+    expect(seatIndex).toBe(1);
   });
 });
 
