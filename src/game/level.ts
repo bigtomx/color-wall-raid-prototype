@@ -14,7 +14,11 @@ export type LevelConfig = {
   reserveUnits: UnitSpec[];
 };
 
-const laneColors = [0x7340e6, 0x2d3b49, 0xf2f4fb, 0xe24d4d, 0xb7eb45];
+const PURPLE = 0x7340e6;
+const GRAY = 0x2d3b49;
+const WHITE = 0xf2f4fb;
+const RED = 0xe24d4d;
+const GREEN = 0xb7eb45;
 
 export const levelOne: LevelConfig = {
   seatCount: 5,
@@ -27,14 +31,14 @@ export const levelOne: LevelConfig = {
     [8, 9, 10, 12, 12, 13, 14]
   ],
   wallColors: [
-    Array(7).fill(laneColors[0]),
-    Array(8).fill(laneColors[1]),
-    Array(8).fill(laneColors[2]),
-    Array(8).fill(laneColors[3]),
-    Array(7).fill(laneColors[4])
+    [PURPLE, PURPLE, PURPLE, PURPLE, GRAY, GRAY, GRAY],
+    [PURPLE, PURPLE, GRAY, GRAY, GRAY, GRAY, GRAY, GRAY],
+    [PURPLE, WHITE, WHITE, WHITE, WHITE, WHITE, RED, GRAY],
+    [GREEN, GREEN, GREEN, RED, WHITE, WHITE, GRAY, GRAY],
+    [GREEN, GREEN, GREEN, GREEN, GRAY, GRAY, GRAY]
   ],
   reserveUnits: Array.from({ length: 10 }, (_, index) => {
-    const tint = laneColors[index % laneColors.length];
+    const tint = [PURPLE, GRAY, WHITE, RED, GREEN][index % 5];
     return {
       ammo: 56,
       damage: 1,
